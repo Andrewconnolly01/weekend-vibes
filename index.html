@@ -106,13 +106,13 @@ h1{font-family:var(--display);font-weight:700;font-size:28px;line-height:1;margi
 .item.plan{border:1px solid var(--mint)}
 .item.done{opacity:.55}
 .item.done .title{text-decoration:line-through}
-.ck{width:28px;height:28px;border-radius:50%;border:2px solid var(--haze);background:transparent;flex:none;display:flex;align-items:center;justify-content:center;color:var(--kelp);padding:0;margin-top:1px}
+.ck{width:26px;height:26px;border-radius:50%;border:2px solid var(--haze);background:transparent;flex:none;display:flex;align-items:center;justify-content:center;color:var(--kelp);padding:0;margin-top:1px}
 .ck svg{width:16px;height:16px}
 .ck[aria-checked="true"]{background:var(--mint);border-color:var(--mint)}
 .body{flex:1;min-width:0;background:none;border:none;padding:0;text-align:left}
-.title{font-size:16px;font-weight:500;overflow-wrap:anywhere}
-.meta{display:flex;gap:6px 8px;flex-wrap:wrap;align-items:center;margin-top:6px;font-size:12px;color:var(--mist)}
-.chip{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.title{font-size:14.5px;line-height:1.35;font-weight:500;overflow-wrap:anywhere}
+.meta{display:flex;gap:6px 8px;flex-wrap:wrap;align-items:center;margin-top:5px;font-size:11.5px;color:var(--mist)}
+.chip{font-size:10.5px;padding:2px 7px;border-radius:999px;white-space:nowrap}
 .c-High{background:var(--coral);color:var(--ember)}.c-Normal{background:var(--haze);color:var(--deep)}.c-Whenever{background:#B4B2A9;color:#2C2C2A}
 .c-mail{background:var(--grape);color:var(--plum)}.c-todo{background:var(--mist);color:var(--deep)}.c-ol{background:var(--sun-soft);color:var(--bark)}.c-slot{background:var(--mint-soft);color:var(--kelp)}
 .c-overdue{background:var(--coral);color:var(--ember)}.c-today{background:var(--sun-soft);color:var(--bark)}
@@ -158,6 +158,13 @@ code{background:var(--night);border-radius:6px;padding:1px 6px;font-size:13px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--mint);color:var(--kelp);
   padding:10px 16px;border-radius:14px;font-size:14px;max-width:calc(100% - 32px);z-index:60;box-shadow:0 6px 20px rgba(0,0,0,.3)}
 a{color:var(--sun-soft)}
+.duebadge{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 7px;margin-left:6px;border-radius:999px;border:none;
+  background:#E24B4A;color:#fff;font-family:var(--body);font-size:14px;font-weight:700;vertical-align:middle;position:relative;top:-3px}
+.duebar{width:100%;border:none;text-align:left;align-items:center;gap:12px;font-size:13px;cursor:pointer}
+.duecount{flex:none;width:36px;height:36px;border-radius:50%;background:#E24B4A;color:#fff;font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
+.duetext{flex:1;line-height:1.35}
+.duebar>span:last-child{font-size:22px;line-height:1}
+details summary{cursor:pointer;color:var(--sun-soft)}
 </style>
 </head>
 <body>

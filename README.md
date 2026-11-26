@@ -127,6 +127,28 @@ The forecast comes from Open-Meteo, which is free and needs no account. It uses 
 
 Outdoor tasks and activities get a warning when the rain chance or wind passes your limits. Both limits are adjustable in Settings. The warning includes a button to move the item to a drier slot.
 
+### Due indicator
+
+The app counts tasks that are **due today or overdue**. The count appears in three places:
+
+- a red badge next to the title
+- a tappable bar that opens the **Due** filter
+- the **Due** tab
+
+To also show the count as a red number on the home-screen icon, turn on **Settings → Show due count on app icon** and allow notifications when asked. If it won't switch on, go to iPhone **Settings → Notifications → Weekend Vibes**, then turn on **Allow Notifications** and **Badges**.
+
+iPhone only updates the icon badge when the app has been opened, so tasks that become due overnight are counted the next time you open it.
+
+### Location
+
+Apple doesn't let web apps give themselves permanent location access. To stop the iPhone asking every time:
+
+1. Go to **Settings → Privacy & Security → Location Services**. Turn it on, tap **Safari Websites**, and choose **While Using the App**.
+2. Go to **Settings → Apps → Safari → Location** and choose **Allow**.
+3. In the app, open **Settings** and tap **Update my location now**.
+
+Between updates, the app reuses your last position for six hours instead of asking again.
+
 ### Microsoft To Do
 
 Tasks from all your To Do lists come into the app. Each one is labelled with its list name, and the **From To Do** filter shows only these tasks. To Do's automatic "Flagged email" list is skipped, because those emails already come in as flagged-email tasks.

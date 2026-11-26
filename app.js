@@ -19,7 +19,7 @@ const LS = {
 };
 let tasks = LS.get('tasks', null);
 let acts = LS.get('acts', null);
-let settings = Object.assign({ rainPct: 50, windKmh: 25, locMode: 'auto', fixedLoc: null, reminderMin: 30, calDefault: true, todoSync: true }, LS.get('settings', {}));
+let settings = Object.assign({ rainPct: 50, windKmh: 25, locMode: 'auto', fixedLoc: null, reminderMin: 30, calDefault: true, todoSync: true, iconBadge: false, lastLoc: null }, LS.get('settings', {}));
 let wxCache = LS.get('weather', null);
 let syncMeta = Object.assign({ last: null, pendingDeletes: [], pendingTodoDeletes: [] }, LS.get('sync', {}));
 const ui = { filter: 'All', wxOpen: false, syncMsgs: [], syncing: false, signedIn: false, account: null, sheet: null, form: null, wxError: '' };
@@ -82,12 +82,34 @@ function wxEmoji(code) {
   if (code >= 80 && code <= 82) return '🌦️'; if (code >= 85 && code <= 86) return '🌨️'; if (code >= 95) return '⛈️';
   return '🌤️';
 }
+const LOC_FRESH_MS = 6 * 3600e3; // reuse a known position for 6 hours before asking the phone again
+async function locPermission() {
+  try { if (navigator.permissions) return (await navigator.permissions.query({ name: 'geolocation' })).state; } catch { /* not supported */ }
+  return 'unknown';
+}
+function askPosition() {
+  return new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 10000, maximumAge: LOC_FRESH_MS, enableHighAccuracy: false }));
+}
+async function refreshLocation(userAsked) {
+  if (!navigator.geolocation) { ui.locState = 'unsupported'; return null; }
+  const perm = await locPermission();
+  if (perm === 'denied') { ui.locState = 'denied'; return null; }
+  // Without a tap from you, only ask if access is already granted or we've never asked before
+  if (!userAsked && perm === 'prompt' && settings.lastLoc) { ui.locState = 'prompt'; return null; }
+  try {
+    const p = await askPosition();
+    settings.lastLoc = { lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3), at: Date.now() };
+    ui.locState = 'granted'; save();
+    return settings.lastLoc;
+  } catch (e) { ui.locState = e && e.code === 1 ? 'denied' : (ui.locState || 'error'); return null; }
+}
 async function getLoc() {
-  if (settings.locMode === 'auto' && navigator.geolocation) {
-    try {
-      const p = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 8000, maximumAge: 3600e3 }));
-      return { lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3), name: 'Your location' };
-    } catch { /* fall through to fixed location */ }
+  if (settings.locMode === 'auto') {
+    const last = settings.lastLoc;
+    if (last && Date.now() - last.at < LOC_FRESH_MS) return { ...last, name: 'Your location' };
+    const fresh = await refreshLocation(false);
+    if (fresh) return { ...fresh, name: 'Your location' };
+    if (last) return { ...last, name: 'Your location' };
   }
   return settings.fixedLoc || CFG.fallbackLocation || { name: 'Tauranga', lat: -37.6878, lon: 176.1651 };
 }
@@ -450,6 +472,31 @@ function clearSamples() {
   tasks = tasks.filter(t => !t.sample); acts = acts.filter(a => !a.sample); save(); render(); toast('Sample items cleared');
 }
 
+/* ---------- Due count (today + overdue) and app icon badge ---------- */
+const isDueNow = t => !t.done && !!t.date && t.date <= today();
+const dueNowCount = () => tasks.filter(isDueNow).length;
+let lastBadge = null;
+function updateIconBadge() {
+  if (!('setAppBadge' in navigator)) return;
+  const n = settings.iconBadge ? dueNowCount() : 0;
+  if (n === lastBadge) return;
+  lastBadge = n;
+  (n > 0 ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+}
+async function enableIconBadge() {
+  if (!('setAppBadge' in navigator) || !('Notification' in window)) {
+    toast('Icon badges work once the app is added to your Home Screen (iOS 16.4 or later).'); return;
+  }
+  let perm = Notification.permission;
+  if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch { perm = 'denied'; } }
+  if (perm !== 'granted') {
+    settings.iconBadge = false; save(); renderSheet();
+    toast('iPhone needs notifications allowed for Weekend Vibes to show the badge. See the steps in Settings.'); return;
+  }
+  settings.iconBadge = true; lastBadge = null; save(); updateIconBadge(); renderSheet();
+  toast('Due count will show on the app icon');
+}
+
 /* ---------- Toast ---------- */
 let toastTimer = null;
 function toast(msg) {
@@ -537,18 +584,19 @@ function render() {
   const clashes = open.filter(t => t.where === 'Outdoor' && isBad(t.date && wxFor(t.date, t.time))).length +
     acts.filter(a => !a.done && a.where === 'Outdoor' && isBad(wxCache?.days?.[a.date]?.slots?.[a.slot])).length;
   const overdue = open.filter(t => t.date && t.date < td).length, dueToday = open.filter(t => t.date === td).length;
+  const dueNow = overdue + dueToday;
   const pending = tasks.some(t => t.dirty && t.cal) || syncMeta.pendingDeletes.length;
   const visActs = acts.filter(a => a.date >= sat).sort((a, b) => (a.date + SLOTS.findIndex(s => s.name === a.slot)).localeCompare(b.date + SLOTS.findIndex(s => s.name === b.slot)));
   const f = ui.filter;
   const list = tasks.filter(t => f === 'All' || (f === 'To do' && !t.done) || (f === 'Outdoor' && t.where === 'Outdoor' && !t.done) ||
-    (f === 'Due' && t.date && !t.done) || (f === 'From To Do' && t.todoId && !t.done) || (f === 'Completed' && t.done))
+    (f === 'Due' && isDueNow(t)) || (f === 'From To Do' && t.todoId && !t.done) || (f === 'Completed' && t.done))
     .sort((a, b) => (a.done - b.done) || ((a.date || '9999') + (a.time || '99')).localeCompare((b.date || '9999') + (b.time || '99')) || PRIS.indexOf(a.pri) - PRIS.indexOf(b.pri));
   const b = bestSlot();
   const lastSync = syncMeta.last ? new Date(syncMeta.last).toLocaleTimeString('en-NZ', { hour: 'numeric', minute: '2-digit' }) : null;
 
   document.getElementById('app').innerHTML = `
   <header class="top">
-    <div class="brand"><div class="sunmark" aria-hidden="true"></div><div><h1>Weekend Vibes</h1>
+    <div class="brand"><div class="sunmark" aria-hidden="true"></div><div><h1>Weekend Vibes${dueNow ? ` <button class="duebadge" data-act="show-due" aria-label="${dueNow} task${dueNow === 1 ? '' : 's'} due now. Show them">${dueNow}</button>` : ''}</h1>
       <div class="sub">${fmtD(sat)} – ${fmtD(sun)}${ui.signedIn && lastSync ? ` · synced ${lastSync}` : ''}</div></div></div>
     <div style="display:flex;gap:8px">
       <button class="iconbtn ${ui.syncing ? 'spin' : ''} ${pending && ui.signedIn ? 'attn' : ''}" data-act="sync" aria-label="${ui.signedIn ? 'Sync with Outlook' : 'Connect Outlook'}">${I.refresh}</button>
@@ -557,7 +605,7 @@ function render() {
   </header>
   ${wxCardHtml()}
   ${ui.syncMsgs.length ? `<div class="note sync"><div><b>${ui.syncMsgs.length} change${ui.syncMsgs.length > 1 ? 's' : ''} from Outlook and To Do</b>${ui.syncMsgs.slice(0, 8).map(m => `<p>${esc(m)}</p>`).join('')}${ui.syncMsgs.length > 8 ? `<p>…and ${ui.syncMsgs.length - 8} more</p>` : ''}</div><button class="x" data-act="dismiss-sync" aria-label="Dismiss">×</button></div>` : ''}
-  ${overdue || dueToday ? `<div class="note due"><p>${[overdue ? `<b>${overdue} overdue</b>` : '', dueToday ? `<b>${dueToday} due today</b>` : ''].filter(Boolean).join(' and ')}</p></div>` : ''}
+  ${dueNow ? `<button class="note due duebar" data-act="show-due"><span class="duecount">${dueNow}</span><span class="duetext"><b>${dueNow} task${dueNow === 1 ? '' : 's'} due</b><br>${[overdue ? `${overdue} overdue` : '', dueToday ? `${dueToday} due today` : ''].filter(Boolean).join(' · ')}</span><span aria-hidden="true">›</span></button>` : ''}
   ${!ui.signedIn ? `<div class="note connect"><p>Bring in flagged emails and sync tasks with your Hotmail calendar.</p><button class="btn btn-foam btn-sm" data-act="connect">Connect Outlook</button></div>` : ''}
   ${tasks.some(t => t.sample) || acts.some(a => a.sample) ? `<div class="note sample"><p>These are sample items to show how things work.</p><button class="btn btn-ghost btn-sm" data-act="clear-samples">Clear samples</button></div>` : ''}
   <div class="pills">
@@ -574,9 +622,10 @@ function render() {
   <div class="sec"><h2>Weekend plans</h2>${b ? `<span>Driest: ${dayShort(b.date)} ${b.slot.toLowerCase()}</span>` : ''}</div>
   ${visActs.map(actHtml).join('') || '<p class="empty">Nothing planned yet. Add something fun for the weekend.</p>'}
   <div class="sec"><h2>Tasks</h2></div>
-  <div class="tabs" role="group" aria-label="Filter tasks">${['All', 'To do', 'Outdoor', 'Due', ...(tasks.some(t => t.todoId) ? ['From To Do'] : []), 'Completed'].map(x => `<button class="tab" aria-pressed="${f === x}" data-act="filter" data-v="${x}">${x}</button>`).join('')}</div>
+  <div class="tabs" role="group" aria-label="Filter tasks">${['All', 'To do', 'Outdoor', `Due${dueNow ? ' (' + dueNow + ')' : ''}`, ...(tasks.some(t => t.todoId) ? ['From To Do'] : []), 'Completed'].map(x => `<button class="tab" aria-pressed="${f === x.replace(/ \(\d+\)$/, '')}" data-act="filter" data-v="${x.replace(/ \(\d+\)$/, '')}">${x}</button>`).join('')}</div>
   ${list.map(taskHtml).join('') || `<p class="empty">${f === 'Completed' ? 'Nothing ticked off yet.' : 'No tasks here. Tap Add task to create one.'}</p>`}
   <div class="foot"><button class="btn btn-ghost btn-sm" data-act="export">Export list</button><button class="btn btn-ghost btn-sm" data-act="settings">Settings</button></div>`;
+  updateIconBadge();
 }
 
 /* ---------- Sheets ---------- */
@@ -639,6 +688,8 @@ function settingsSheet() {
       ${ui.signedIn ? `<p class="hint">Connected as ${esc(acc?.username || acc?.name || 'your Microsoft account')}. To Do tasks, flagged emails and calendar events sync each time you open the app or tap refresh.</p>
         <div class="sheet-actions"><button class="btn btn-ghost" data-act="disconnect">Disconnect</button><button class="btn btn-foam" data-act="sync-now">Sync now</button></div>`
       : `<p class="hint">${configured() ? 'Not connected.' : 'Needs a one-time setup first.'}</p><div class="sheet-actions"><button class="btn btn-foam" data-act="connect">Connect Outlook</button></div>`}
+      <div class="toggle"><span id="ib-l">Show due count on app icon</span><button type="button" class="sw" role="switch" aria-labelledby="ib-l" aria-checked="${settings.iconBadge}" data-act="set-badge"><span></span></button></div>
+      <p class="hint">Counts tasks due today or overdue. iPhone only updates the badge when the app has been opened. If it won't switch on: iPhone <b>Settings → Notifications → Weekend Vibes → Allow Notifications</b> and <b>Badges</b> on.</p>
       <div class="toggle"><span id="td-l">Bring in my Microsoft To Do tasks</span><button type="button" class="sw" role="switch" aria-labelledby="td-l" aria-checked="${settings.todoSync}" data-act="set-todo"><span></span></button></div>
       <div class="toggle"><span id="cd-l">Add new tasks to calendar by default</span><button type="button" class="sw" role="switch" aria-labelledby="cd-l" aria-checked="${settings.calDefault}" data-act="set-caldefault"><span></span></button></div>
       <div class="field"><label for="s-rem">Calendar reminder</label><select id="s-rem" class="in" data-set="reminderMin">${[[0, 'No reminder'], [15, '15 minutes before'], [30, '30 minutes before'], [60, '1 hour before'], [120, '2 hours before']].map(([v, l]) => `<option value="${v}" ${settings.reminderMin === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -646,6 +697,17 @@ function settingsSheet() {
     </div>
     <div class="setgroup"><h4>Weather</h4>
       <div class="field"><span class="lbl">Forecast location</span>${seg('locMode', [['auto', 'Use my location'], ['fixed', 'Set a town']], settings.locMode)}</div>
+      ${settings.locMode === 'auto' ? `<p class="hint ${ui.locState === 'denied' ? 'warnc' : ''}">${{ granted: 'Location allowed.', denied: 'Location is blocked, so the forecast uses your saved town.', prompt: 'Location isn’t permanently allowed yet.', unsupported: 'This browser can’t share location.' }[ui.locState] || 'Location status unknown until the next forecast update.'}${settings.lastLoc ? ' Last position saved ' + new Date(settings.lastLoc.at).toLocaleString('en-NZ', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : ''}</p>
+      <div class="sheet-actions" style="margin-top:8px"><button class="btn btn-ghost btn-sm" data-act="loc-now">Update my location now</button></div>
+      <details class="hint" style="margin-top:10px"><summary>Stop iPhone asking every time</summary>
+        <ol class="steps" style="font-size:13px;margin:8px 0 0">
+          <li>iPhone <b>Settings → Privacy &amp; Security → Location Services</b>: make sure it’s on.</li>
+          <li>In the same list, tap <b>Safari Websites</b> and choose <b>While Using the App</b>. Home Screen web apps use this setting.</li>
+          <li>Go to <b>Settings → Apps → Safari → Location</b> and choose <b>Allow</b>, not “Ask”.</li>
+          <li>Back here, tap <b>Update my location now</b> and choose <b>Allow</b> if asked.</li>
+        </ol>
+        <p style="margin:6px 0 0">Apple doesn’t let web apps give themselves permanent access, so these settings are the switch. Between updates, the app reuses your last position for six hours rather than asking again.</p>
+      </details>` : ''}
       ${settings.locMode === 'fixed' ? `<div class="field"><label for="s-town">Town</label><div class="row"><input id="s-town" class="in" value="${esc(settings.fixedLoc?.name || CFG.fallbackLocation?.name || '')}" autocomplete="off"><button class="btn btn-foam" style="flex:0 0 auto" data-act="find-town">Set</button></div><div class="err" id="town-err"></div></div>` : ''}
       <div class="field"><label for="s-rain">Warn about outdoor plans when rain chance is ${settings.rainPct}% or more</label><input id="s-rain" class="range" type="range" min="20" max="90" step="5" value="${settings.rainPct}" data-set="rainPct"></div>
       <div class="field"><label for="s-wind">…or wind is ${settings.windKmh} km/h or more</label><input id="s-wind" class="range" type="range" min="10" max="60" step="5" value="${settings.windKmh}" data-set="windKmh"></div>
@@ -737,6 +799,9 @@ async function onClick(e) {
       ui.form[k] = v; renderSheet(); break;
     }
     case 'toggle-cal': ui.form.cal = !ui.form.cal; renderSheet(); break;
+    case 'set-badge': if (settings.iconBadge) { settings.iconBadge = false; save(); lastBadge = null; updateIconBadge(); renderSheet(); } else enableIconBadge(); break;
+    case 'loc-now': { const l = await refreshLocation(true); renderSheet(); if (l) { toast('Location updated'); loadWeather(true); } else toast(ui.locState === 'denied' ? 'Location is blocked. Follow the steps under “Stop iPhone asking every time”.' : 'Couldn’t get your location just now.'); break; }
+    case 'show-due': ui.filter = 'Due'; render(); document.querySelector('.tabs')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
     case 'set-todo': settings.todoSync = !settings.todoSync; save(); renderSheet(); if (settings.todoSync) syncAll(false); break;
     case 'set-caldefault': settings.calDefault = !settings.calDefault; save(); renderSheet(); break;
     case 'find-town': findTown(); break;
@@ -807,10 +872,12 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { loadWeather(false); if (ui.signedIn) syncAll(false); render(); }
+  else { lastBadge = null; updateIconBadge(); }
 });
 
 /* ---------- Start ---------- */
 (async function start() {
+  locPermission().then(st => { ui.locState = st === 'unknown' ? ui.locState : st; });
   render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   await initAuth();
