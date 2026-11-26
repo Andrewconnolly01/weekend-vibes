@@ -18,7 +18,7 @@ Plan your weekend tasks and activities around the weather, with flagged Hotmail 
 
 This is a fresh build. It does not read the tasks stored by your old Weekend Vibes. To keep them, open the old app and export your list before you install this one.
 
-Without Outlook set up, the app still works fully: tasks, activities, weather, recurring tasks and exports. Steps 3 and 4 only add the Outlook features.
+Without Outlook set up, the app still works fully: tasks, activities, weather, recurring tasks and exports. Steps 3 to 6 only add the Outlook features.
 
 ---
 
@@ -38,27 +38,67 @@ Microsoft sign-in only works from a proper web address, so the app needs hosting
 2. Open your GitHub Pages address in **Safari**.
 3. Tap **Share**, then **Add to Home Screen**, then **Add**.
 
-The app now works, without Outlook. Steps 3 and 4 connect Outlook.
+The app now works, without Outlook. Steps 3 to 6 connect Outlook.
 
-## Step 3 — Register the app with Microsoft (free, about 10 minutes)
+## Step 3 — Create a free Microsoft directory (about 10 minutes, once only)
 
-1. Go to https://portal.azure.com and sign in with your **Hotmail / Outlook.com** account.
-   - If Microsoft asks you to set up a directory or free account first, follow its prompts. Microsoft changes this screen from time to time.
-2. Search for **App registrations** and click **New registration**.
+Since June 2024, Microsoft only lets apps be registered inside a "directory". A Hotmail account doesn't come with one, but a free Azure account does. This step is easier on a computer than on a phone.
+
+1. Go to **https://azure.microsoft.com/free** and click **Try Azure for free** (sometimes labelled **Start free**).
+2. Sign in with your **Hotmail / Outlook.com** account.
+3. Fill in your profile:
+   - Country/region: **New Zealand**
+   - Your name, and a mobile number for a text verification code
+4. Enter a **credit or debit card**. Prepaid cards aren't accepted.
+   - This only verifies your identity. You might see a small temporary authorisation hold, which disappears.
+   - You are **not charged** unless you choose to upgrade to pay-as-you-go later. Don't upgrade.
+5. Agree to the terms and click **Sign up**. When the Azure portal opens, this step is done.
+
+What happens after 30 days: the free Azure credit expires, and Microsoft emails asking you to upgrade. Ignore those emails. Your directory and the app registration stay, are free, and keep working.
+
+## Step 4 — Register Weekend Vibes (about 5 minutes)
+
+1. Go to **https://entra.microsoft.com** and sign in with your Hotmail account.
+   - The top-right corner should show **Default Directory**. If it doesn't, click your account picture, then **Switch directory**, and choose it.
+2. In the left menu, open **Entra ID → App registrations**, then click **New registration**.
+3. Fill in the form:
    - **Name:** `Weekend Vibes`
-   - **Supported account types:** *Personal Microsoft accounts only*
-   - **Redirect URI:** choose **Single-page application (SPA)**, then paste your GitHub Pages address exactly as written in Step 1, including the final `/`.
-   - Click **Register**.
-3. On the overview page, copy the **Application (client) ID**. It looks like `1a2b3c4d-....`.
-4. Go to **API permissions → Add a permission → Microsoft Graph → Delegated permissions**. Tick **Mail.ReadWrite** and **Calendars.ReadWrite**, then click **Add permissions**. **User.Read** is already there. Personal accounts don't need admin consent.
+   - **Supported account types:** choose **Personal Microsoft accounts only**. If that option isn't listed, choose **Accounts in any organizational directory and personal Microsoft accounts**.
+     - Do **not** choose "this organizational directory only". Hotmail can't sign in with that option.
+   - **Redirect URI:** in the dropdown, pick **Single-page application (SPA)**, not "Web". Paste your GitHub Pages address from Step 1 exactly, including `https://` and the final `/`.
+4. Click **Register**.
+5. On the overview page that opens, copy the **Application (client) ID**.
+   - Ignore "Directory (tenant) ID" and "Object ID". They look similar but won't work.
+6. Click **API permissions → Add a permission → Microsoft Graph → Delegated permissions**.
+   - Search for and tick **Mail.ReadWrite**.
+   - Search for and tick **Calendars.ReadWrite**.
+   - Search for and tick **Tasks.ReadWrite**. This is for your Microsoft To Do lists.
+   - Click **Add permissions**. **User.Read** is already in the list.
+   - Ignore **Grant admin consent**. You don't need it, because you approve the permissions yourself when you sign in.
+7. Click **Authentication** and check that your address is listed under **Single-page application**.
+   - Leave the "Access tokens" and "ID tokens" boxes **unticked**.
 
-## Step 4 — Add your ID and connect
+## Step 5 — Add your ID to the app
 
-1. On GitHub, open `config.js` in your repository and click the pencil icon to edit it.
-2. Paste your ID between the quotes: `clientId: '1a2b3c4d-....',`
-3. Click **Commit changes**. Wait a minute for GitHub to publish the change.
-4. On your iPhone, fully close Weekend Vibes and reopen it. It updates itself in the background, so you may need to close and reopen it a second time.
-5. Tap **Connect Outlook**, sign in, and accept the permissions.
+1. On GitHub, open your `weekend-vibes` repository and click `config.js`.
+2. Click the pencil icon to edit it.
+3. Paste your ID between the quotes, so the line reads `clientId: '1a2b3c4d-…',`. Keep the quotes and the comma.
+4. Click **Commit changes**.
+5. Open the repository's **Actions** tab and wait for the green tick, usually about a minute.
+
+## Step 6 — Connect on your iPhone
+
+1. Fully close Weekend Vibes by swiping it away, then reopen it. Do this twice so it picks up the new settings.
+2. Tap **Connect Outlook** and sign in with your Hotmail account.
+3. Microsoft shows a permissions screen, and may label the app **unverified**.
+   - That's expected for a personal app you registered yourself.
+   - It asks to read and write your mail. Write access is only used to mark flags complete when you tick off a task.
+4. Tap **Accept**. You return to the app, connected.
+
+**Check it works:**
+
+1. Flag an email in Outlook, then tap refresh in the app. The email should appear as a task.
+2. Add a task with a time and **Add to Hotmail calendar** switched on. It should appear in your Outlook calendar within a few seconds.
 
 ---
 
@@ -86,6 +126,19 @@ Activities are the fun side of the weekend. Each one has a day, a time of day an
 The forecast comes from Open-Meteo, which is free and needs no account. It uses your phone's location, or a town you set in **Settings**.
 
 Outdoor tasks and activities get a warning when the rain chance or wind passes your limits. Both limits are adjustable in Settings. The warning includes a button to move the item to a drier slot.
+
+### Microsoft To Do
+
+Tasks from all your To Do lists come into the app. Each one is labelled with its list name, and the **From To Do** filter shows only these tasks. To Do's automatic "Flagged email" list is skipped, because those emails already come in as flagged-email tasks.
+
+Changes sync both ways:
+
+- **Ticking off.** Ticking a task in the app completes it in To Do, and completing it in To Do ticks it off in the app.
+- **Editing.** Changes to the name, due date, priority (High, Normal and Whenever match To Do's high, normal and low importance) or notes in either place carry across.
+- **New tasks.** Tasks you add in To Do appear in the app at the next sync.
+- **Deleting.** Deleting a To Do task in the app also deletes it in To Do.
+
+You can turn To Do syncing off in **Settings**.
 
 ### Flagged emails
 
@@ -121,12 +174,23 @@ When using a keyboard: **N** adds a task, **A** adds an activity, **R** syncs, a
 
 ## Privacy
 
-Tasks and settings are stored only on your phone. Outlook data goes directly between your phone and Microsoft. The app reads only flagged emails and events tagged Weekend Vibes. You can disconnect at any time in **Settings**.
+Tasks and settings are stored only on your phone. Outlook data goes directly between your phone and Microsoft. The app reads only your To Do lists, flagged emails and events tagged Weekend Vibes. You can disconnect at any time in **Settings**.
 
 ## Troubleshooting
 
 **"AADSTS50011" or "redirect URI mismatch"**
-The address in Azure must exactly match the one you open the app from, including `https://` and the final `/`.
+The address in Entra must exactly match the one you open the app from, including `https://` and the final `/`. Fix it under **App registrations → Weekend Vibes → Authentication**.
+
+**"unauthorized_client" or "not enabled for consumers"**
+The supported account type is set to your directory only. In **App registrations → Weekend Vibes → Manifest**, make these changes, then click **Save**:
+1. Change `"signInAudience"` to `"AzureADandPersonalMicrosoftAccount"`.
+2. Make sure `"requestedAccessTokenVersion"` (or `"accessTokenAcceptedVersion"`) is `2`.
+
+**"AADSTS700016: application not found"**
+The ID in `config.js` is wrong. Recheck that you copied the **Application (client) ID**, not the tenant ID.
+
+**"AADSTS9002326" or "cross-origin token redemption"**
+The redirect address was added as **Web** instead of **Single-page application**. Under **Authentication**, delete the Web entry and add the address again as **Single-page application**.
 
 **Sign-in goes round in a loop from the home-screen app**
 Home-screen apps on iPhone sometimes mishandle sign-in redirects. Try the following in order:

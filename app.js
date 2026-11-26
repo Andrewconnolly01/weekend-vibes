@@ -19,9 +19,9 @@ const LS = {
 };
 let tasks = LS.get('tasks', null);
 let acts = LS.get('acts', null);
-let settings = Object.assign({ rainPct: 50, windKmh: 25, locMode: 'auto', fixedLoc: null, reminderMin: 30, calDefault: true }, LS.get('settings', {}));
+let settings = Object.assign({ rainPct: 50, windKmh: 25, locMode: 'auto', fixedLoc: null, reminderMin: 30, calDefault: true, todoSync: true }, LS.get('settings', {}));
 let wxCache = LS.get('weather', null);
-let syncMeta = Object.assign({ last: null, pendingDeletes: [] }, LS.get('sync', {}));
+let syncMeta = Object.assign({ last: null, pendingDeletes: [], pendingTodoDeletes: [] }, LS.get('sync', {}));
 const ui = { filter: 'All', wxOpen: false, syncMsgs: [], syncing: false, signedIn: false, account: null, sheet: null, form: null, wxError: '' };
 function save() { LS.set('tasks', tasks); LS.set('acts', acts); LS.set('settings', settings); LS.set('sync', syncMeta); }
 
@@ -143,7 +143,7 @@ function bestSlot() {
 }
 
 /* ---------- Microsoft sign-in and Graph ---------- */
-const SCOPES = ['User.Read', 'Mail.ReadWrite', 'Calendars.ReadWrite'];
+const SCOPES = ['User.Read', 'Mail.ReadWrite', 'Calendars.ReadWrite', 'Tasks.ReadWrite'];
 const IANA = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Pacific/Auckland';
 const WIN_TZ = { 'Pacific/Auckland': 'New Zealand Standard Time', 'Pacific/Chatham': 'Chatham Islands Standard Time',
   'Australia/Sydney': 'AUS Eastern Standard Time', 'Australia/Melbourne': 'AUS Eastern Standard Time', 'Australia/Brisbane': 'E. Australia Standard Time',
@@ -176,7 +176,7 @@ async function signOut() {
   // Clears the sign-in on this phone without leaving the app
   await msalApp.logoutRedirect({ account, onRedirectNavigate: () => false });
   ui.signedIn = false; ui.account = null;
-  tasks.forEach(t => { t.dirty = false; });
+  tasks.forEach(t => { t.dirty = false; t.todoDirty = false; });
   save(); closeSheet(); render(); toast('Outlook disconnected');
 }
 async function token() {
@@ -190,7 +190,7 @@ async function token() {
 async function g(path, { method = 'GET', body } = {}) {
   const tk = await token();
   const r = await fetch(path.startsWith('http') ? path : 'https://graph.microsoft.com/v1.0' + path, {
-    method, headers: { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', Prefer: `outlook.timezone="${TZ}"` },
+    method, headers: { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', Prefer: `outlook.timezone="${TZ}", outlook.body-content-type="text"` },
     body: body ? JSON.stringify(body) : undefined
   });
   if (r.status === 204) return null;
@@ -290,6 +290,80 @@ async function syncEmail(msgs) {
     t.done = true; t.doneAt = Date.now(); msgs.push(`${t.title}: flag cleared in Outlook`);
   }
 }
+/* Microsoft To Do <-> tasks */
+const IMP_TO_PRI = { high: 'High', normal: 'Normal', low: 'Whenever' };
+const PRI_TO_IMP = { High: 'high', Normal: 'normal', Whenever: 'low' };
+const todoPath = t => `/me/todo/lists/${encodeURIComponent(t.todoList)}/tasks/${encodeURIComponent(t.todoId)}`;
+function todoDate(d) {
+  if (!d || !d.dateTime) return '';
+  const tz = (d.timeZone || '').toUpperCase();
+  if (tz === 'UTC' || tz === 'ETC/UTC' || tz === 'COORDINATED UNIVERSAL TIME') return iso(new Date(d.dateTime.slice(0, 19) + 'Z'));
+  return d.dateTime.slice(0, 10);
+}
+function todoBody(t) {
+  return { title: t.title, importance: PRI_TO_IMP[t.pri] || 'normal', status: t.done ? 'completed' : 'notStarted',
+    dueDateTime: t.date ? { dateTime: `${t.date}T00:00:00`, timeZone: TZ } : null,
+    body: { contentType: 'text', content: t.notes || '' } };
+}
+async function pushTodo(t) {
+  if (!ui.signedIn || !t.todoId) return;
+  try {
+    const x = await g(todoPath(t), { method: 'PATCH', body: todoBody(t) });
+    t.todoMod = x && x.lastModifiedDateTime; t.todoDirty = false;
+  } catch (e) {
+    if (e.status === 404) { t.todoId = null; t.todoList = null; t.todoDirty = false; } else throw e;
+  }
+}
+function applyTodo(x, list, msgs) {
+  const r = { title: x.title || '(untitled)', date: todoDate(x.dueDateTime), pri: IMP_TO_PRI[x.importance] || 'Normal',
+    notes: (x.body && x.body.content || '').trim() };
+  let t = tasks.find(y => y.todoId === x.id);
+  if (!t) {
+    tasks.push(newTask({ ...r, source: 'todo', todoId: x.id, todoList: list.id, listName: list.displayName, todoMod: x.lastModifiedDateTime, cal: false }));
+    msgs.push(`New from To Do (${list.displayName}): ${r.title}`);
+    return;
+  }
+  t.todoList = list.id; t.listName = list.displayName;
+  if (t.todoDirty) return; // the app has a newer change waiting to go up
+  if (t.done) { t.done = false; t.doneAt = null; msgs.push(`${t.title}: reopened in To Do`); }
+  if (x.lastModifiedDateTime === t.todoMod) return;
+  const ch = [];
+  if (r.title !== t.title) ch.push(`renamed from “${t.title}”`);
+  if (r.date !== t.date) ch.push(r.date ? 'now due ' + fmtD(r.date) : 'due date removed');
+  if (r.pri !== t.pri) ch.push(r.pri.toLowerCase() + ' priority');
+  if (r.notes !== (t.notes || '').trim()) ch.push('notes updated');
+  Object.assign(t, { title: r.title, date: r.date, pri: r.pri, notes: r.notes, todoMod: x.lastModifiedDateTime });
+  if (ch.length) { t.olChanged = true; if (t.cal) { t.dirty = true; t.updatedAt = Date.now(); } msgs.push(`${t.title}: ${ch.join(', ')}`); }
+}
+async function getAll(url) {
+  const out = [];
+  while (url) { const j = await g(url); out.push(...j.value); url = j['@odata.nextLink'] || null; }
+  return out;
+}
+async function pullTodo(msgs) {
+  if (!settings.todoSync) return;
+  // Skip To Do's automatic "Flagged email" list: those already come in as flagged-email tasks
+  const lists = (await getAll('/me/todo/lists?$top=100')).filter(l => l.wellknownListName !== 'flaggedEmails');
+  const seen = new Set(), readOk = new Set();
+  for (const l of lists) {
+    const base = `/me/todo/lists/${encodeURIComponent(l.id)}/tasks`;
+    let items;
+    try { items = await getAll(`${base}?$filter=status ne 'completed'&$top=100`); }
+    catch (e) {
+      if (e.status === 401 || e.status === 403) throw e;
+      try { items = (await getAll(`${base}?$top=100`)).filter(x => x.status !== 'completed'); } catch { continue; }
+    }
+    readOk.add(l.id);
+    items.forEach(x => { seen.add(x.id); applyTodo(x, l, msgs); });
+  }
+  const listIds = new Set(lists.map(l => l.id));
+  for (const t of tasks.filter(x => x.todoId)) {
+    if (!listIds.has(t.todoList)) { t.todoId = null; t.todoList = null; continue; } // list was deleted
+    if (readOk.has(t.todoList) && !seen.has(t.todoId) && !t.done && !t.todoDirty) {
+      t.done = true; t.doneAt = Date.now(); msgs.push(`${t.title}: completed in To Do`);
+    }
+  }
+}
 async function syncAll(manual) {
   if (!ui.signedIn || ui.syncing) { if (manual && !ui.signedIn) signIn(); return; }
   ui.syncing = true; render();
@@ -299,6 +373,12 @@ async function syncAll(manual) {
       try { await g(`/me/events/${id}`, { method: 'DELETE' }); } catch (e) { if (e.status !== 404) continue; }
       syncMeta.pendingDeletes = syncMeta.pendingDeletes.filter(x => x !== id);
     }
+    for (const d of [...syncMeta.pendingTodoDeletes]) {
+      try { await g(`/me/todo/lists/${encodeURIComponent(d.list)}/tasks/${encodeURIComponent(d.id)}`, { method: 'DELETE' }); } catch (e) { if (e.status !== 404) continue; }
+      syncMeta.pendingTodoDeletes = syncMeta.pendingTodoDeletes.filter(x => x.id !== d.id);
+    }
+    for (const t of tasks.filter(x => x.todoDirty)) { try { await pushTodo(t); } catch { /* stays queued */ } }
+    await pullTodo(msgs);
     await pullCalendar(msgs);
     for (const t of tasks.filter(x => x.dirty)) { try { await pushTask(t); } catch { /* stays queued */ } }
     await syncEmail(msgs);
@@ -315,7 +395,12 @@ async function syncAll(manual) {
 /* ---------- Actions ---------- */
 async function commit(t, { quiet } = {}) {
   t.updatedAt = Date.now(); t.dirty = true; t.olChanged = false;
+  if (t.todoId) t.todoDirty = true;
   save(); render();
+  if (ui.signedIn && t.todoId) {
+    try { await pushTodo(t); save(); render(); }
+    catch { if (!quiet) toast('Saved. It’ll sync to To Do when Outlook is reachable.'); }
+  }
   if (ui.signedIn && (t.cal || t.eventId)) {
     try { await pushTask(t); save(); render(); }
     catch { if (!quiet) toast('Saved. It’ll sync to your calendar when Outlook is reachable.'); }
@@ -330,7 +415,8 @@ async function toggleTask(id) {
   }
   t.done = !t.done; t.doneAt = t.done ? Date.now() : null;
   if (t.emailId) { save(); render(); await pushFlag(t); toast(t.done ? 'Flag marked complete in Outlook' : 'Email flagged again in Outlook'); save(); return; }
-  if (t.done) toast('Nice one');
+  if (t.todoId) toast(t.done ? 'Marked complete in To Do' : 'Reopened in To Do');
+  else if (t.done) toast('Nice one');
   await commit(t);
 }
 function moveTask(id) {
@@ -346,8 +432,13 @@ async function deleteTask(id) {
     if (ui.signedIn) { try { await g(`/me/events/${t.eventId}`, { method: 'DELETE' }); } catch (e) { if (e.status !== 404) syncMeta.pendingDeletes.push(t.eventId); } }
     else syncMeta.pendingDeletes.push(t.eventId);
   }
+  if (t.todoId) {
+    const d = { list: t.todoList, id: t.todoId };
+    if (ui.signedIn) { try { await g(`/me/todo/lists/${encodeURIComponent(d.list)}/tasks/${encodeURIComponent(d.id)}`, { method: 'DELETE' }); } catch (e) { if (e.status !== 404) syncMeta.pendingTodoDeletes.push(d); } }
+    else syncMeta.pendingTodoDeletes.push(d);
+  }
   save(); closeSheet(); render();
-  toast(`Deleted${t.eventId ? ' — removed from your calendar' : ''}`);
+  toast(`Deleted${t.todoId ? ' — also removed from To Do' : ''}${t.eventId ? ' — removed from your calendar' : ''}`);
 }
 function toggleAct(id) { const a = acts.find(x => x.id === id); if (!a) return; a.done = !a.done; save(); render(); }
 function moveAct(id) {
@@ -414,7 +505,8 @@ function taskHtml(t) {
       <div class="title">${esc(t.title)}</div>
       <div class="meta">
         ${t.emailId ? `<span class="chip c-mail">✉ ${esc(t.from || 'Email')}</span>` : ''}
-        ${t.olChanged ? '<span class="chip c-ol">Updated in Outlook</span>' : ''}
+        ${t.todoId ? `<span class="chip c-todo">☑ ${esc(t.listName || 'To Do')}</span>` : ''}
+        ${t.olChanged ? `<span class="chip c-ol">Updated in ${t.todoId ? 'To Do' : 'Outlook'}</span>` : ''}
         ${due}<span class="chip c-${t.pri}">${t.pri}</span>
         ${t.date ? `<span>${fmtD(t.date)}${t.time ? ', ' + fmtT(t.time) : ''}</span>` : ''}
         ${w ? `<span>${wxEmoji(w.code)} ${w.rain}%</span>` : ''}
@@ -449,7 +541,7 @@ function render() {
   const visActs = acts.filter(a => a.date >= sat).sort((a, b) => (a.date + SLOTS.findIndex(s => s.name === a.slot)).localeCompare(b.date + SLOTS.findIndex(s => s.name === b.slot)));
   const f = ui.filter;
   const list = tasks.filter(t => f === 'All' || (f === 'To do' && !t.done) || (f === 'Outdoor' && t.where === 'Outdoor' && !t.done) ||
-    (f === 'Due' && t.date && !t.done) || (f === 'Completed' && t.done))
+    (f === 'Due' && t.date && !t.done) || (f === 'From To Do' && t.todoId && !t.done) || (f === 'Completed' && t.done))
     .sort((a, b) => (a.done - b.done) || ((a.date || '9999') + (a.time || '99')).localeCompare((b.date || '9999') + (b.time || '99')) || PRIS.indexOf(a.pri) - PRIS.indexOf(b.pri));
   const b = bestSlot();
   const lastSync = syncMeta.last ? new Date(syncMeta.last).toLocaleTimeString('en-NZ', { hour: 'numeric', minute: '2-digit' }) : null;
@@ -464,7 +556,7 @@ function render() {
     </div>
   </header>
   ${wxCardHtml()}
-  ${ui.syncMsgs.length ? `<div class="note sync"><div><b>${ui.syncMsgs.length} change${ui.syncMsgs.length > 1 ? 's' : ''} from Outlook</b>${ui.syncMsgs.slice(0, 8).map(m => `<p>${esc(m)}</p>`).join('')}${ui.syncMsgs.length > 8 ? `<p>…and ${ui.syncMsgs.length - 8} more</p>` : ''}</div><button class="x" data-act="dismiss-sync" aria-label="Dismiss">×</button></div>` : ''}
+  ${ui.syncMsgs.length ? `<div class="note sync"><div><b>${ui.syncMsgs.length} change${ui.syncMsgs.length > 1 ? 's' : ''} from Outlook and To Do</b>${ui.syncMsgs.slice(0, 8).map(m => `<p>${esc(m)}</p>`).join('')}${ui.syncMsgs.length > 8 ? `<p>…and ${ui.syncMsgs.length - 8} more</p>` : ''}</div><button class="x" data-act="dismiss-sync" aria-label="Dismiss">×</button></div>` : ''}
   ${overdue || dueToday ? `<div class="note due"><p>${[overdue ? `<b>${overdue} overdue</b>` : '', dueToday ? `<b>${dueToday} due today</b>` : ''].filter(Boolean).join(' and ')}</p></div>` : ''}
   ${!ui.signedIn ? `<div class="note connect"><p>Bring in flagged emails and sync tasks with your Hotmail calendar.</p><button class="btn btn-foam btn-sm" data-act="connect">Connect Outlook</button></div>` : ''}
   ${tasks.some(t => t.sample) || acts.some(a => a.sample) ? `<div class="note sample"><p>These are sample items to show how things work.</p><button class="btn btn-ghost btn-sm" data-act="clear-samples">Clear samples</button></div>` : ''}
@@ -482,7 +574,7 @@ function render() {
   <div class="sec"><h2>Weekend plans</h2>${b ? `<span>Driest: ${dayShort(b.date)} ${b.slot.toLowerCase()}</span>` : ''}</div>
   ${visActs.map(actHtml).join('') || '<p class="empty">Nothing planned yet. Add something fun for the weekend.</p>'}
   <div class="sec"><h2>Tasks</h2></div>
-  <div class="tabs" role="group" aria-label="Filter tasks">${['All', 'To do', 'Outdoor', 'Due', 'Completed'].map(x => `<button class="tab" aria-pressed="${f === x}" data-act="filter" data-v="${x}">${x}</button>`).join('')}</div>
+  <div class="tabs" role="group" aria-label="Filter tasks">${['All', 'To do', 'Outdoor', 'Due', ...(tasks.some(t => t.todoId) ? ['From To Do'] : []), 'Completed'].map(x => `<button class="tab" aria-pressed="${f === x}" data-act="filter" data-v="${x}">${x}</button>`).join('')}</div>
   ${list.map(taskHtml).join('') || `<p class="empty">${f === 'Completed' ? 'Nothing ticked off yet.' : 'No tasks here. Tap Add task to create one.'}</p>`}
   <div class="foot"><button class="btn btn-ghost btn-sm" data-act="export">Export list</button><button class="btn btn-ghost btn-sm" data-act="settings">Settings</button></div>`;
 }
@@ -512,6 +604,7 @@ function sheetWrap(title, inner) {
 function taskSheet() {
   const f = ui.form; const w = f.date ? wxFor(f.date, f.time) : null; const bad = f.where === 'Outdoor' && isBad(w);
   return sheetWrap(f.isNew ? 'New task' : 'Edit task', `
+    ${f.todoId ? `<p class="hint">From your To Do list “${esc(f.listName || 'Tasks')}”. Changes to the name, due date, priority, notes or completion sync back to To Do.</p>` : ''}
     ${f.emailId ? `<p class="hint">From a flagged email${f.from ? ' from ' + esc(f.from) : ''}. ${f.emailLink ? `<a href="${esc(f.emailLink)}" target="_blank" rel="noopener">Open email</a>` : ''}</p>` : ''}
     <div class="field"><label for="f-title">Task</label><input id="f-title" class="in" data-k="title" value="${esc(f.title)}" placeholder="Pick up firewood" autocomplete="off" ${f.isNew ? 'autofocus' : ''}><div class="err" id="f-err"></div></div>
     <div class="row"><div class="field"><label for="f-date">Due date</label><input id="f-date" type="date" class="in" data-k="date" value="${esc(f.date)}"></div>
@@ -543,9 +636,10 @@ function settingsSheet() {
   const acc = ui.account;
   return sheetWrap('Settings', `
     <div class="setgroup" style="border:none;margin-top:4px"><h4>Outlook</h4>
-      ${ui.signedIn ? `<p class="hint">Connected as ${esc(acc?.username || acc?.name || 'your Microsoft account')}. Flagged emails and calendar events sync each time you open the app or tap refresh.</p>
+      ${ui.signedIn ? `<p class="hint">Connected as ${esc(acc?.username || acc?.name || 'your Microsoft account')}. To Do tasks, flagged emails and calendar events sync each time you open the app or tap refresh.</p>
         <div class="sheet-actions"><button class="btn btn-ghost" data-act="disconnect">Disconnect</button><button class="btn btn-foam" data-act="sync-now">Sync now</button></div>`
       : `<p class="hint">${configured() ? 'Not connected.' : 'Needs a one-time setup first.'}</p><div class="sheet-actions"><button class="btn btn-foam" data-act="connect">Connect Outlook</button></div>`}
+      <div class="toggle"><span id="td-l">Bring in my Microsoft To Do tasks</span><button type="button" class="sw" role="switch" aria-labelledby="td-l" aria-checked="${settings.todoSync}" data-act="set-todo"><span></span></button></div>
       <div class="toggle"><span id="cd-l">Add new tasks to calendar by default</span><button type="button" class="sw" role="switch" aria-labelledby="cd-l" aria-checked="${settings.calDefault}" data-act="set-caldefault"><span></span></button></div>
       <div class="field"><label for="s-rem">Calendar reminder</label><select id="s-rem" class="in" data-set="reminderMin">${[[0, 'No reminder'], [15, '15 minutes before'], [30, '30 minutes before'], [60, '1 hour before'], [120, '2 hours before']].map(([v, l]) => `<option value="${v}" ${settings.reminderMin === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <p class="hint">All-day tasks remind you the afternoon before.</p></div>
@@ -643,6 +737,7 @@ async function onClick(e) {
       ui.form[k] = v; renderSheet(); break;
     }
     case 'toggle-cal': ui.form.cal = !ui.form.cal; renderSheet(); break;
+    case 'set-todo': settings.todoSync = !settings.todoSync; save(); renderSheet(); if (settings.todoSync) syncAll(false); break;
     case 'set-caldefault': settings.calDefault = !settings.calDefault; save(); renderSheet(); break;
     case 'find-town': findTown(); break;
     case 'save-task': {
