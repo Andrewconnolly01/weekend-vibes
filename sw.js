@@ -1,5 +1,5 @@
 // Weekend Vibes service worker: keeps the app working offline.
-const CACHE = 'weekend-vibes-v2.2.0';
+const CACHE = 'weekend-vibes-v2.2.1';
 const SHELL = ['./', './index.html', './config.js', './manifest.json', './app.js', './msal-browser.min.js',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
 
